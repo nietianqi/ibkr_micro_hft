@@ -1,0 +1,163 @@
+name = "IBKR L1-First Microstructure Confirmed Hybrid Scalp"
+timezone = "America/New_York"
+default_symbols = ["AAPL", "NVDA", "AMD", "MSFT", "AMZN", "META", "SPY", "QQQ"]
+
+[runtime]
+shutdown_grace_seconds = 10
+heartbeat_seconds = 5
+event_queue_size = 10000
+capture_signals_in_capture_mode = false
+reconcile_interval_seconds = 30
+
+[ibkr]
+host = "127.0.0.1"
+port = 7497
+client_id = 101
+account = ""
+read_only = false
+market_data_type = 1
+depth_levels = 5
+reconnect_delay_seconds = 5.0
+snapshot_permissions_only = false
+generic_ticks = "236,233,375"
+subscribe_depth = true
+
+[strategy]
+signal_window = 240
+trade_window_ms = 1000
+quote_window_ms = 1000
+depth_window_ms = 1000
+trade_burst_window_ms = 500
+microprice_window_ms = 800
+confirmed_min_signal_agree = 4
+confirmed_entry_threshold = 2.25
+passive_entry_threshold = 1.75
+score_collapse_threshold = 0.50
+soft_hold_ms = 3000
+soft_hold_score_threshold = 0.75
+hard_hold_ms = 12000
+max_price_progress_ticks = 1.0
+max_payup_ticks = 1.0
+tp_ticks = 1.0
+strong_tp_ticks = 2.0
+min_trade_rate = 5.0
+min_top_depth = 100.0
+max_spread_ticks = 2.0
+max_quote_age_ms = 1500
+volatility_guard_ticks = 8.0
+passive_entry_enabled = true
+depth_bonus_enabled = true
+
+[strategy.weights]
+l1_imbalance = 0.15
+quote_ofi = 0.20
+tape_ofi = 0.20
+trade_burst = 0.15
+microprice_tilt = 0.15
+microprice_momentum = 0.15
+linkage = 0.25
+depth_bonus = 0.30
+
+[strategy.entry_regime_defaults]
+confirmed_taker_threshold = 2.25
+passive_improvement_threshold = 1.75
+passive_entry_ttl_ms = 250
+passive_entry_max_retries = 1
+
+[risk]
+max_order_quantity = 50
+max_symbol_quantity = 100
+max_open_positions = 3
+max_symbol_daily_loss = 150.0
+max_strategy_daily_loss = 400.0
+max_consecutive_losses = 4
+max_spread_kill_ticks = 4.0
+stale_quote_kill_ms = 3000
+canary_quantity = 1
+per_trade_risk_dollars = 15.0
+vol_floor_cents = 0.03
+depth_participation_rate = 0.1
+min_shortable_tier = 2.5
+min_shortable_shares_multiple = 5
+
+[storage]
+root_dir = "runtime"
+sqlite_path = "runtime/state/engine.sqlite3"
+parquet_root = "runtime/parquet"
+flush_rows = 200
+
+[logging]
+level = "INFO"
+json = true
+
+[symbols.AAPL]
+tick_size = 0.01
+max_shares = 50
+reference_symbols = ["QQQ", "MSFT"]
+min_top_depth = 100
+min_trade_rate = 5
+max_spread_ticks = 2
+is_etf = false
+
+[symbols.NVDA]
+tick_size = 0.01
+max_shares = 20
+reference_symbols = ["QQQ", "AMD", "SOXX"]
+min_top_depth = 100
+min_trade_rate = 5
+max_spread_ticks = 2
+is_etf = false
+
+[symbols.AMD]
+tick_size = 0.01
+max_shares = 40
+reference_symbols = ["QQQ", "NVDA", "SOXX"]
+min_top_depth = 100
+min_trade_rate = 5
+max_spread_ticks = 2
+is_etf = false
+
+[symbols.MSFT]
+tick_size = 0.01
+max_shares = 30
+reference_symbols = ["QQQ", "AAPL"]
+min_top_depth = 100
+min_trade_rate = 5
+max_spread_ticks = 2
+is_etf = false
+
+[symbols.AMZN]
+tick_size = 0.01
+max_shares = 20
+reference_symbols = ["QQQ", "SPY"]
+min_top_depth = 100
+min_trade_rate = 5
+max_spread_ticks = 2
+is_etf = false
+
+[symbols.META]
+tick_size = 0.01
+max_shares = 20
+reference_symbols = ["QQQ", "SPY"]
+min_top_depth = 100
+min_trade_rate = 5
+max_spread_ticks = 2
+is_etf = false
+
+[symbols.SPY]
+tick_size = 0.01
+max_shares = 20
+reference_symbols = []
+min_top_depth = 200
+min_trade_rate = 8
+max_spread_ticks = 1
+is_etf = true
+
+[symbols.QQQ]
+tick_size = 0.01
+max_shares = 20
+reference_symbols = []
+min_top_depth = 200
+min_trade_rate = 8
+max_spread_ticks = 1
+is_etf = true

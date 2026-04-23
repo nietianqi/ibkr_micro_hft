@@ -1,0 +1,2 @@
+[console_scripts]
+ibkr-micro-alpha = ibkr_micro_alpha.cli:main

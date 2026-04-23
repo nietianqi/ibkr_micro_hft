@@ -1,0 +1,17 @@
+[Unit]
+Description=IBKR Micro Alpha Engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ibkr
+WorkingDirectory=/opt/ibkr_micro_alpha
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/ibkr_micro_alpha/.venv/bin/ibkr-micro-alpha shadow --config /opt/ibkr_micro_alpha/configs/default.toml
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target
