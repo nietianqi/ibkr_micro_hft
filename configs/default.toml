@@ -1,4 +1,4 @@
-name = "IBKR L1-First Microstructure Confirmed Hybrid Scalp"
+name = "IBKR Research-Enhanced Microstructure Bi-Directional"
 timezone = "America/New_York"
 default_symbols = ["AAPL", "NVDA", "AMD", "MSFT", "AMZN", "META", "SPY", "QQQ"]
 
@@ -29,9 +29,16 @@ quote_window_ms = 1000
 depth_window_ms = 1000
 trade_burst_window_ms = 500
 microprice_window_ms = 800
+higher_tf_window_ms = 900000
 confirmed_min_signal_agree = 4
 confirmed_entry_threshold = 2.25
 passive_entry_threshold = 1.75
+aggressive_entry_enabled = true
+aggressive_entry_threshold = 3.25
+aggressive_min_signal_agree = 6
+aggressive_max_spread_ticks = 1.0
+aggressive_hold_ms = 1500
+aggressive_trade_burst_zscore = 1.0
 score_collapse_threshold = 0.50
 soft_hold_ms = 3000
 soft_hold_score_threshold = 0.75
@@ -47,6 +54,10 @@ max_quote_age_ms = 1500
 volatility_guard_ticks = 8.0
 passive_entry_enabled = true
 depth_bonus_enabled = true
+reservation_bias_threshold_ticks = 0.10
+queue_thin_depth_ratio = 1.25
+queue_entry_threshold_bonus = 0.25
+queue_min_signal_agree_bonus = 1
 
 [strategy.weights]
 l1_imbalance = 0.15
@@ -64,6 +75,61 @@ passive_improvement_threshold = 1.75
 passive_entry_ttl_ms = 250
 passive_entry_max_retries = 1
 
+[strategy.session_regimes.pre]
+start_time = "08:00"
+end_time = "09:25"
+enabled = true
+allow_entry = true
+allow_passive_entry = true
+confirmed_entry_threshold = 2.50
+passive_entry_threshold = 2.00
+confirmed_min_signal_agree = 4
+higher_tf_bias_weight = 0.30
+
+[strategy.session_regimes.open]
+start_time = "09:30"
+end_time = "10:00"
+enabled = true
+allow_entry = true
+allow_passive_entry = true
+confirmed_entry_threshold = 2.35
+passive_entry_threshold = 1.90
+confirmed_min_signal_agree = 4
+higher_tf_bias_weight = 0.25
+
+[strategy.session_regimes.core]
+start_time = "10:00"
+end_time = "15:30"
+enabled = true
+allow_entry = true
+allow_passive_entry = true
+confirmed_entry_threshold = 2.25
+passive_entry_threshold = 1.75
+confirmed_min_signal_agree = 4
+higher_tf_bias_weight = 0.20
+
+[strategy.session_regimes.close]
+start_time = "15:30"
+end_time = "16:00"
+enabled = true
+allow_entry = true
+allow_passive_entry = true
+confirmed_entry_threshold = 2.40
+passive_entry_threshold = 1.90
+confirmed_min_signal_agree = 4
+higher_tf_bias_weight = 0.25
+
+[strategy.session_regimes.post]
+start_time = "16:00"
+end_time = "17:30"
+enabled = true
+allow_entry = true
+allow_passive_entry = false
+confirmed_entry_threshold = 2.60
+passive_entry_threshold = 2.10
+confirmed_min_signal_agree = 5
+higher_tf_bias_weight = 0.30
+
 [risk]
 max_order_quantity = 50
 max_symbol_quantity = 100
@@ -77,8 +143,51 @@ canary_quantity = 1
 per_trade_risk_dollars = 15.0
 vol_floor_cents = 0.03
 depth_participation_rate = 0.1
+queue_size_scale = 0.75
 min_shortable_tier = 2.5
 min_shortable_shares_multiple = 5
+
+[risk.session_caps.pre]
+size_scale = 0.40
+max_open_positions = 1
+allow_new_entries = true
+allow_long = true
+allow_short = true
+
+[risk.session_caps.open]
+size_scale = 0.75
+max_open_positions = 2
+allow_new_entries = true
+allow_long = true
+allow_short = true
+
+[risk.session_caps.core]
+size_scale = 1.00
+max_open_positions = 3
+allow_new_entries = true
+allow_long = true
+allow_short = true
+
+[risk.session_caps.close]
+size_scale = 0.75
+max_open_positions = 2
+allow_new_entries = true
+allow_long = true
+allow_short = true
+
+[risk.session_caps.post]
+size_scale = 0.40
+max_open_positions = 1
+allow_new_entries = true
+allow_long = true
+allow_short = true
+
+[risk.session_caps.off]
+size_scale = 0.0
+max_open_positions = 0
+allow_new_entries = false
+allow_long = false
+allow_short = false
 
 [storage]
 root_dir = "runtime"
@@ -98,6 +207,9 @@ min_top_depth = 100
 min_trade_rate = 5
 max_spread_ticks = 2
 is_etf = false
+tier = "tier_a"
+allow_extended_hours = true
+allow_short_extended = true
 
 [symbols.NVDA]
 tick_size = 0.01
@@ -107,6 +219,9 @@ min_top_depth = 100
 min_trade_rate = 5
 max_spread_ticks = 2
 is_etf = false
+tier = "tier_a"
+allow_extended_hours = true
+allow_short_extended = true
 
 [symbols.AMD]
 tick_size = 0.01
@@ -116,6 +231,9 @@ min_top_depth = 100
 min_trade_rate = 5
 max_spread_ticks = 2
 is_etf = false
+tier = "tier_b"
+allow_extended_hours = false
+allow_short_extended = false
 
 [symbols.MSFT]
 tick_size = 0.01
@@ -125,6 +243,9 @@ min_top_depth = 100
 min_trade_rate = 5
 max_spread_ticks = 2
 is_etf = false
+tier = "tier_a"
+allow_extended_hours = true
+allow_short_extended = true
 
 [symbols.AMZN]
 tick_size = 0.01
@@ -134,6 +255,9 @@ min_top_depth = 100
 min_trade_rate = 5
 max_spread_ticks = 2
 is_etf = false
+tier = "tier_b"
+allow_extended_hours = false
+allow_short_extended = false
 
 [symbols.META]
 tick_size = 0.01
@@ -143,6 +267,9 @@ min_top_depth = 100
 min_trade_rate = 5
 max_spread_ticks = 2
 is_etf = false
+tier = "tier_b"
+allow_extended_hours = false
+allow_short_extended = false
 
 [symbols.SPY]
 tick_size = 0.01
@@ -152,6 +279,9 @@ min_top_depth = 200
 min_trade_rate = 8
 max_spread_ticks = 1
 is_etf = true
+tier = "tier_a"
+allow_extended_hours = true
+allow_short_extended = true
 
 [symbols.QQQ]
 tick_size = 0.01
@@ -161,3 +291,18 @@ min_top_depth = 200
 min_trade_rate = 8
 max_spread_ticks = 1
 is_etf = true
+tier = "tier_a"
+allow_extended_hours = true
+allow_short_extended = true
+
+[symbols.TSLA]
+tick_size = 0.01
+max_shares = 10
+reference_symbols = ["QQQ", "SPY"]
+min_top_depth = 100
+min_trade_rate = 5
+max_spread_ticks = 2
+is_etf = false
+tier = "watchlist"
+allow_extended_hours = false
+allow_short_extended = false

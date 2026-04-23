@@ -14,6 +14,7 @@ from .execution import WORKING_ORDER_STATUSES, ExecutionManager
 from .logging_utils import configure_logging
 from .reporting import render_report
 from .risk import HardRiskManager
+from .session import classify_session, is_extended_hours
 from .signals import SignalCalculator
 from .state import MarketStateStore
 from .storage import NoopAuditWriter, ParquetAuditWriter, SQLiteStore
@@ -24,11 +25,13 @@ from .types import (
     DecisionContext,
     EngineEvent,
     EngineMode,
+    ExecutionState,
     FillEvent,
     IntentAction,
     MarketMetaUpdate,
     OrderUpdate,
     PositionSide,
+    QueueState,
     QuoteUpdate,
     SessionHealth,
     SignalSnapshot,
@@ -192,6 +195,7 @@ class TradingEngine:
         warnings: list[str] = []
         quote = state.quote
         signal_time = signal.ts_local if signal is not None else datetime.now(UTC).replace(tzinfo=None)
+        session_regime = signal.session_regime if signal is not None else classify_session(self.config, ts_event)
         if quote is not None:
             age_ms = (signal_time - quote.ts_event).total_seconds() * 1000.0
             self.health.data_stale = age_ms > self.config.risk.stale_quote_kill_ms
@@ -209,6 +213,10 @@ class TradingEngine:
             position=self.execution.position_for(symbol),
             session_health=self.health,
             pending_orders=self.execution.pending_orders(symbol),
+            session_regime=session_regime,
+            extended_hours=is_extended_hours(session_regime),
+            queue_state=signal.queue_state if signal is not None else QueueState.NORMAL,
+            execution_state=signal.execution_state if signal is not None else ExecutionState.NORMAL,
             depth_available=state.capabilities().depth_available,
             short_inventory_ok=short_inventory_ok,
             shortable_tier=state.shortable_tier,
@@ -247,6 +255,7 @@ class TradingEngine:
                 reason=intent.reason,
                 take_profit_price=intent.take_profit_price,
                 entry_regime=intent.entry_regime,
+                execution_state=intent.execution_state,
                 max_slippage_ticks=intent.max_slippage_ticks,
                 reduce_only=intent.reduce_only,
                 ttl_ms=intent.ttl_ms,

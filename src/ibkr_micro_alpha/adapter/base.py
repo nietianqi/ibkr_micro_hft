@@ -32,6 +32,7 @@ class AbstractBrokerAdapter(ABC):
         limit_price: float | None,
         purpose: str,
         parent_local_order_id: str | None = None,
+        outside_rth: bool = False,
     ) -> int:
         raise NotImplementedError
 

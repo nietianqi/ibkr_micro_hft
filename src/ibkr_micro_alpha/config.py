@@ -5,7 +5,70 @@ from pathlib import Path
 from typing import Any
 import tomllib
 
-from .types import EngineMode
+from .types import EngineMode, SessionRegime, SymbolTier
+
+
+def _default_session_regimes() -> dict[str, SessionRegimeConfig]:
+    return {
+        SessionRegime.PRE.value: SessionRegimeConfig(
+            start_time="08:00",
+            end_time="09:25",
+            confirmed_entry_threshold=2.50,
+            passive_entry_threshold=2.00,
+            confirmed_min_signal_agree=4,
+            higher_tf_bias_weight=0.30,
+        ),
+        SessionRegime.OPEN.value: SessionRegimeConfig(
+            start_time="09:30",
+            end_time="10:00",
+            confirmed_entry_threshold=2.35,
+            passive_entry_threshold=1.90,
+            confirmed_min_signal_agree=4,
+            higher_tf_bias_weight=0.25,
+        ),
+        SessionRegime.CORE.value: SessionRegimeConfig(
+            start_time="10:00",
+            end_time="15:30",
+            confirmed_entry_threshold=2.25,
+            passive_entry_threshold=1.75,
+            confirmed_min_signal_agree=4,
+            higher_tf_bias_weight=0.20,
+        ),
+        SessionRegime.CLOSE.value: SessionRegimeConfig(
+            start_time="15:30",
+            end_time="16:00",
+            confirmed_entry_threshold=2.40,
+            passive_entry_threshold=1.90,
+            confirmed_min_signal_agree=4,
+            higher_tf_bias_weight=0.25,
+        ),
+        SessionRegime.POST.value: SessionRegimeConfig(
+            start_time="16:00",
+            end_time="17:30",
+            confirmed_entry_threshold=2.60,
+            passive_entry_threshold=2.10,
+            confirmed_min_signal_agree=5,
+            allow_passive_entry=False,
+            higher_tf_bias_weight=0.30,
+        ),
+    }
+
+
+def _default_session_caps() -> dict[str, SessionRiskCap]:
+    return {
+        SessionRegime.PRE.value: SessionRiskCap(size_scale=0.40, max_open_positions=1),
+        SessionRegime.OPEN.value: SessionRiskCap(size_scale=0.75, max_open_positions=2),
+        SessionRegime.CORE.value: SessionRiskCap(size_scale=1.00, max_open_positions=3),
+        SessionRegime.CLOSE.value: SessionRiskCap(size_scale=0.75, max_open_positions=2),
+        SessionRegime.POST.value: SessionRiskCap(size_scale=0.40, max_open_positions=1),
+        SessionRegime.OFF.value: SessionRiskCap(
+            size_scale=0.0,
+            max_open_positions=0,
+            allow_new_entries=False,
+            allow_long=False,
+            allow_short=False,
+        ),
+    }
 
 
 @dataclass(slots=True)
@@ -17,6 +80,9 @@ class SymbolConfig:
     min_trade_rate: float = 5.0
     max_spread_ticks: float = 2.0
     is_etf: bool = False
+    tier: SymbolTier = SymbolTier.TIER_B
+    allow_extended_hours: bool = False
+    allow_short_extended: bool = False
 
 
 @dataclass(slots=True)
@@ -64,6 +130,23 @@ class EntryRegimeDefaults:
 
 
 @dataclass(slots=True)
+class SessionRegimeConfig:
+    start_time: str = "10:00"
+    end_time: str = "15:30"
+    enabled: bool = True
+    allow_entry: bool = True
+    allow_passive_entry: bool = True
+    confirmed_entry_threshold: float = 2.25
+    passive_entry_threshold: float = 1.75
+    confirmed_min_signal_agree: int = 4
+    max_spread_ticks: float | None = None
+    min_trade_rate: float | None = None
+    min_top_depth: float | None = None
+    max_price_progress_ticks: float | None = None
+    higher_tf_bias_weight: float = 0.20
+
+
+@dataclass(slots=True)
 class StrategyConfig:
     signal_window: int = 240
     trade_window_ms: int = 1000
@@ -71,9 +154,16 @@ class StrategyConfig:
     depth_window_ms: int = 1000
     trade_burst_window_ms: int = 500
     microprice_window_ms: int = 800
+    higher_tf_window_ms: int = 900000
     confirmed_min_signal_agree: int = 4
     confirmed_entry_threshold: float = 2.25
     passive_entry_threshold: float = 1.75
+    aggressive_entry_enabled: bool = True
+    aggressive_entry_threshold: float = 3.25
+    aggressive_min_signal_agree: int = 6
+    aggressive_max_spread_ticks: float = 1.0
+    aggressive_hold_ms: int = 1500
+    aggressive_trade_burst_zscore: float = 1.0
     score_collapse_threshold: float = 0.50
     soft_hold_ms: int = 3000
     soft_hold_score_threshold: float = 0.75
@@ -89,8 +179,13 @@ class StrategyConfig:
     volatility_guard_ticks: float = 8.0
     passive_entry_enabled: bool = True
     depth_bonus_enabled: bool = True
+    reservation_bias_threshold_ticks: float = 0.10
+    queue_thin_depth_ratio: float = 1.25
+    queue_entry_threshold_bonus: float = 0.25
+    queue_min_signal_agree_bonus: int = 1
     weights: StrategyWeights = field(default_factory=StrategyWeights)
     entry_regime_defaults: EntryRegimeDefaults = field(default_factory=EntryRegimeDefaults)
+    session_regimes: dict[str, SessionRegimeConfig] = field(default_factory=_default_session_regimes)
 
     # Compatibility fields kept for existing code paths and configs.
     min_signal_agree: int = 4
@@ -99,6 +194,19 @@ class StrategyConfig:
     exit_score_threshold: float = 0.50
     max_hold_seconds: int = 12
     max_chase_ticks: float = 1.0
+
+    def session_regime_for(self, regime: SessionRegime | str) -> SessionRegimeConfig:
+        key = regime.value if isinstance(regime, SessionRegime) else str(regime)
+        return self.session_regimes.get(key, SessionRegimeConfig(enabled=False, allow_entry=False))
+
+
+@dataclass(slots=True)
+class SessionRiskCap:
+    size_scale: float = 1.0
+    max_open_positions: int | None = None
+    allow_new_entries: bool = True
+    allow_long: bool = True
+    allow_short: bool = True
 
 
 @dataclass(slots=True)
@@ -115,8 +223,14 @@ class RiskConfig:
     per_trade_risk_dollars: float = 15.0
     vol_floor_cents: float = 0.03
     depth_participation_rate: float = 0.1
+    queue_size_scale: float = 0.75
     min_shortable_tier: float = 2.5
     min_shortable_shares_multiple: int = 5
+    session_caps: dict[str, SessionRiskCap] = field(default_factory=_default_session_caps)
+
+    def session_cap_for(self, regime: SessionRegime | str) -> SessionRiskCap:
+        key = regime.value if isinstance(regime, SessionRegime) else str(regime)
+        return self.session_caps.get(key, SessionRiskCap())
 
 
 @dataclass(slots=True)
@@ -135,7 +249,7 @@ class LoggingConfig:
 
 @dataclass(slots=True)
 class EngineConfig:
-    name: str = "IBKR L1-First Microstructure Confirmed Hybrid Scalp"
+    name: str = "IBKR Research-Enhanced Microstructure Bi-Directional"
     timezone: str = "America/New_York"
     default_symbols: list[str] = field(default_factory=lambda: ["AAPL", "NVDA", "AMD", "MSFT", "AMZN", "META", "SPY", "QQQ"])
     mode: EngineMode = EngineMode.SHADOW
@@ -168,6 +282,22 @@ def _merge_dataclass(instance: Any, payload: dict[str, Any]) -> Any:
     return instance
 
 
+def _merge_named_dataclasses[T](defaults: dict[str, T], payload: dict[str, Any], factory: type[T]) -> dict[str, T]:
+    merged = {key: value for key, value in defaults.items()}
+    for key, value in payload.items():
+        instance = merged.get(str(key), factory())
+        if isinstance(value, dict):
+            _merge_dataclass(instance, value)
+        merged[str(key)] = instance
+    return merged
+
+
+def _coerce_symbol_config(symbol_config: SymbolConfig) -> SymbolConfig:
+    if isinstance(symbol_config.tier, str):
+        symbol_config.tier = SymbolTier(symbol_config.tier)
+    return symbol_config
+
+
 def load_engine_config(path: str | Path, mode: EngineMode | None = None) -> EngineConfig:
     config_path = Path(path)
     payload = _load_toml(config_path)
@@ -180,19 +310,35 @@ def load_engine_config(path: str | Path, mode: EngineMode | None = None) -> Engi
     _merge_dataclass(config, top_level)
     _merge_dataclass(config.runtime, payload.get("runtime", {}))
     _merge_dataclass(config.ibkr, payload.get("ibkr", {}))
+
     strategy_payload = dict(payload.get("strategy", {}))
     weights_payload = strategy_payload.pop("weights", {})
     regime_payload = strategy_payload.pop("entry_regime_defaults", {})
+    session_regimes_payload = strategy_payload.pop("session_regimes", {})
     _merge_dataclass(config.strategy, strategy_payload)
     _merge_dataclass(config.strategy.weights, weights_payload)
     _merge_dataclass(config.strategy.entry_regime_defaults, regime_payload)
-    _merge_dataclass(config.risk, payload.get("risk", {}))
+    config.strategy.session_regimes = _merge_named_dataclasses(
+        _default_session_regimes(),
+        session_regimes_payload,
+        SessionRegimeConfig,
+    )
+
+    risk_payload = dict(payload.get("risk", {}))
+    session_caps_payload = risk_payload.pop("session_caps", {})
+    _merge_dataclass(config.risk, risk_payload)
+    config.risk.session_caps = _merge_named_dataclasses(
+        _default_session_caps(),
+        session_caps_payload,
+        SessionRiskCap,
+    )
+
     _merge_dataclass(config.storage, payload.get("storage", {}))
     _merge_dataclass(config.logging, payload.get("logging", {}))
     for symbol, symbol_payload in payload.get("symbols", {}).items():
         symbol_config = SymbolConfig()
         _merge_dataclass(symbol_config, symbol_payload)
-        config.symbols[symbol] = symbol_config
+        config.symbols[symbol] = _coerce_symbol_config(symbol_config)
     if mode is not None:
         config.mode = mode
     elif "mode" in payload:

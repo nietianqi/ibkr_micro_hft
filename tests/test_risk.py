@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from ibkr_micro_alpha.config import EngineConfig
+from ibkr_micro_alpha.config import EngineConfig, SymbolConfig
 from ibkr_micro_alpha.risk import HardRiskManager
 from ibkr_micro_alpha.types import (
     DecisionContext,
     EngineMode,
     EntryRegime,
+    ExecutionState,
     IntentAction,
     MarketDataCapabilities,
+    QueueState,
     QuoteUpdate,
+    SessionRegime,
     SessionHealth,
     SignalFilterState,
     SignalSnapshot,
+    SymbolTier,
     TradeIntent,
     TradeSide,
 )
@@ -43,17 +47,51 @@ def _signal_snapshot(ts: datetime) -> SignalSnapshot:
             "weighted_imbalance": 1.0,
             "lob_ofi": 1.0,
         },
-        filters=SignalFilterState(True, 0.0, True, True, 0.0, 5.0, 1.0, False, True, False, ()),
+        filters=SignalFilterState(
+            market_ok=True,
+            linkage_score=0.0,
+            overheat_long_ok=True,
+            overheat_short_ok=True,
+            quote_age_ms=0.0,
+            trade_rate_per_sec=5.0,
+            spread_ticks=1.0,
+            depth_available=False,
+            short_inventory_ok=True,
+            queue_state=QueueState.NORMAL,
+            abnormal=False,
+            reasons=(),
+            session_reasons=(),
+        ),
         long_score=3.0,
         short_score=-3.0,
         depth_available=False,
+        agreement_count_long=6,
+        agreement_count_short=0,
+        linkage_score=0.0,
+        reservation_bias=0.5,
+        market_ok=True,
+        abnormal=False,
+        queue_state=QueueState.NORMAL,
+        execution_state=ExecutionState.NORMAL,
+        session_regime=SessionRegime.CORE,
+        higher_tf_regime_score=0.0,
+        session_trade_allowed=True,
         shortable_tier=3.0,
         shortable_shares=1000,
         entry_regime_candidate=EntryRegime.CONFIRMED_TAKER,
     )
 
 
-def _context(ts: datetime, *, connected: bool = True, data_stale: bool = False, shortable_tier: float | None = 3.0, shortable_shares: int | None = 1000) -> DecisionContext:
+def _context(
+    ts: datetime,
+    *,
+    connected: bool = True,
+    data_stale: bool = False,
+    shortable_tier: float | None = 3.0,
+    shortable_shares: int | None = 1000,
+    session_regime: SessionRegime = SessionRegime.CORE,
+    extended_hours: bool = False,
+) -> DecisionContext:
     quote = QuoteUpdate(
         symbol="AAPL",
         ts_event=ts,
@@ -72,6 +110,10 @@ def _context(ts: datetime, *, connected: bool = True, data_stale: bool = False, 
         position=None,
         session_health=SessionHealth(connected, data_stale, ts, 0, False, 0, EngineMode.SHADOW),
         pending_orders=0,
+        session_regime=session_regime,
+        extended_hours=extended_hours,
+        queue_state=QueueState.NORMAL,
+        execution_state=ExecutionState.NORMAL,
         depth_available=False,
         short_inventory_ok=True,
         shortable_tier=shortable_tier,
@@ -114,3 +156,50 @@ def test_reconcile_mismatch_engages_kill_switch() -> None:
     assert decision.kill_switch is True
     assert decision.reason == "reconcile_mismatch"
     assert risk.kill_switch_engaged is True
+
+
+def test_risk_manager_clamps_quantity_by_session_scale() -> None:
+    config = EngineConfig(mode=EngineMode.SHADOW)
+    risk = HardRiskManager(config)
+    ts = datetime.now(UTC).replace(tzinfo=None)
+    intent = TradeIntent(IntentAction.OPEN_LONG, "AAPL", TradeSide.BUY, 50, 100.01, ts, "entry")
+
+    decision = risk.evaluate(_context(ts, session_regime=SessionRegime.PRE), intent)
+
+    assert decision.allowed is True
+    assert decision.reason == "clamped_quantity"
+    assert decision.max_quantity == 20
+
+
+def test_risk_manager_blocks_extended_hours_short_when_symbol_not_enabled() -> None:
+    config = EngineConfig(mode=EngineMode.LIVE)
+    config.symbols["AAPL"] = SymbolConfig(
+        tick_size=0.01,
+        max_shares=50,
+        tier=SymbolTier.TIER_B,
+        allow_extended_hours=True,
+        allow_short_extended=False,
+    )
+    risk = HardRiskManager(config)
+    ts = datetime.now(UTC).replace(tzinfo=None)
+    intent = TradeIntent(IntentAction.OPEN_SHORT, "AAPL", TradeSide.SELL, 20, 100.00, ts, "entry")
+
+    decision = risk.evaluate(_context(ts, session_regime=SessionRegime.PRE, extended_hours=True), intent)
+
+    assert decision.allowed is False
+    assert decision.reason == "extended_hours_short_disabled"
+
+
+def test_risk_manager_applies_queue_size_scale() -> None:
+    config = EngineConfig(mode=EngineMode.SHADOW)
+    risk = HardRiskManager(config)
+    ts = datetime.now(UTC).replace(tzinfo=None)
+    intent = TradeIntent(IntentAction.OPEN_LONG, "AAPL", TradeSide.BUY, 50, 100.01, ts, "entry")
+    context = _context(ts, session_regime=SessionRegime.CORE)
+    context.execution_state = ExecutionState.QUEUE
+
+    decision = risk.evaluate(context, intent)
+
+    assert decision.allowed is True
+    assert decision.reason == "clamped_quantity"
+    assert decision.max_quantity == 37

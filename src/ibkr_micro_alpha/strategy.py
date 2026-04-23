@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config import EngineConfig
-from .types import DecisionContext, EntryRegime, IntentAction, PositionSide, TradeIntent, TradeSide
+from .types import DecisionContext, EntryRegime, ExecutionState, IntentAction, PositionSide, SessionRegime, TradeIntent, TradeSide
 
 
 PRIMARY_KEYS = (
@@ -20,6 +20,10 @@ def _value_with_fallback(raw_value: float, zscore: float) -> float:
     if abs(zscore) > 1e-9:
         return zscore
     return raw_value
+
+
+def _tick_match(value: float, target: float, tolerance: float = 0.05) -> bool:
+    return abs(value - target) <= tolerance
 
 
 def _signal_agreement(context: DecisionContext, direction: int) -> int:
@@ -54,17 +58,95 @@ class DecisionEngine:
             return self._decide_exit(context)
         if context.pending_orders > 0:
             return None
-        if not signal.filters.market_ok or signal.filters.abnormal:
+        if not signal.filters.market_ok or signal.filters.abnormal or not signal.session_trade_allowed:
+            return None
+        if context.execution_state == ExecutionState.ABNORMAL:
             return None
 
+        session_config = self.config.strategy.session_regime_for(context.session_regime)
         tick_size = self.config.symbol_config(signal.symbol).tick_size
         quantity = self.config.symbol_config(signal.symbol).max_shares
-        long_agreement = _signal_agreement(context, 1)
-        short_agreement = _signal_agreement(context, -1)
+        long_agreement = signal.agreement_count_long or _signal_agreement(context, 1)
+        short_agreement = signal.agreement_count_short or _signal_agreement(context, -1)
+        queue_threshold_bonus = self.config.strategy.queue_entry_threshold_bonus if context.execution_state == ExecutionState.QUEUE else 0.0
+        queue_agreement_bonus = self.config.strategy.queue_min_signal_agree_bonus if context.execution_state == ExecutionState.QUEUE else 0
+        confirmed_entry_threshold = session_config.confirmed_entry_threshold + queue_threshold_bonus
+        confirmed_min_signal_agree = session_config.confirmed_min_signal_agree + queue_agreement_bonus
 
         if (
-            signal.long_score >= self.config.strategy.confirmed_entry_threshold
-            and long_agreement >= self.config.strategy.confirmed_min_signal_agree
+            self.config.strategy.aggressive_entry_enabled
+            and context.execution_state == ExecutionState.NORMAL
+            and signal.filters.spread_ticks <= self.config.strategy.aggressive_max_spread_ticks
+        ):
+            if (
+                signal.long_score >= self.config.strategy.aggressive_entry_threshold
+                and long_agreement >= self.config.strategy.aggressive_min_signal_agree
+                and signal.filters.overheat_long_ok
+                and signal.zscores.get("trade_burst", 0.0) >= self.config.strategy.aggressive_trade_burst_zscore
+                and signal.tape_ofi > 0
+                and signal.microprice_tilt >= self.config.strategy.reservation_bias_threshold_ticks
+            ):
+                return TradeIntent(
+                    action=IntentAction.OPEN_LONG,
+                    symbol=signal.symbol,
+                    side=TradeSide.BUY,
+                    quantity=quantity,
+                    limit_price=quote.ask_price + (self.config.strategy.max_payup_ticks * tick_size),
+                    ts_event=signal.ts_event,
+                    reason="aggressive_taker_long",
+                    entry_regime=EntryRegime.AGGRESSIVE_TAKER,
+                    execution_state=context.execution_state,
+                    max_slippage_ticks=self.config.strategy.max_payup_ticks,
+                    reduce_only=False,
+                    purpose_detail="aggressive_taker_entry",
+                    metadata={
+                        "tp_ticks": self._tp_ticks(signal, EntryRegime.AGGRESSIVE_TAKER),
+                        "agreed_signals": long_agreement,
+                        "session_regime": context.session_regime.value,
+                        "extended_hours": context.extended_hours,
+                        "higher_tf_regime_score": signal.higher_tf_regime_score,
+                        "reservation_bias": signal.reservation_bias,
+                        "queue_state": context.queue_state.value,
+                        "execution_state": context.execution_state.value,
+                    },
+                )
+            if (
+                signal.short_score >= self.config.strategy.aggressive_entry_threshold
+                and short_agreement >= self.config.strategy.aggressive_min_signal_agree
+                and signal.filters.overheat_short_ok
+                and signal.zscores.get("trade_burst", 0.0) >= self.config.strategy.aggressive_trade_burst_zscore
+                and signal.tape_ofi < 0
+                and signal.microprice_tilt <= -self.config.strategy.reservation_bias_threshold_ticks
+                and context.short_inventory_ok
+            ):
+                return TradeIntent(
+                    action=IntentAction.OPEN_SHORT,
+                    symbol=signal.symbol,
+                    side=TradeSide.SELL,
+                    quantity=quantity,
+                    limit_price=quote.bid_price - (self.config.strategy.max_payup_ticks * tick_size),
+                    ts_event=signal.ts_event,
+                    reason="aggressive_taker_short",
+                    entry_regime=EntryRegime.AGGRESSIVE_TAKER,
+                    execution_state=context.execution_state,
+                    max_slippage_ticks=self.config.strategy.max_payup_ticks,
+                    reduce_only=False,
+                    purpose_detail="aggressive_taker_entry",
+                    metadata={
+                        "tp_ticks": self._tp_ticks(signal, EntryRegime.AGGRESSIVE_TAKER),
+                        "agreed_signals": short_agreement,
+                        "session_regime": context.session_regime.value,
+                        "extended_hours": context.extended_hours,
+                        "higher_tf_regime_score": signal.higher_tf_regime_score,
+                        "reservation_bias": signal.reservation_bias,
+                        "queue_state": context.queue_state.value,
+                        "execution_state": context.execution_state.value,
+                    },
+                )
+
+        if (
+            signal.long_score >= confirmed_entry_threshold
+            and long_agreement >= confirmed_min_signal_agree
             and signal.filters.overheat_long_ok
             and signal.filters.spread_ticks <= 2.0
         ):
@@ -77,14 +159,24 @@ class DecisionEngine:
                 ts_event=signal.ts_event,
                 reason="confirmed_taker_long",
                 entry_regime=EntryRegime.CONFIRMED_TAKER,
+                execution_state=context.execution_state,
                 max_slippage_ticks=self.config.strategy.max_payup_ticks,
                 reduce_only=False,
                 purpose_detail="confirmed_taker_entry",
-                metadata={"tp_ticks": self._tp_ticks(signal), "agreed_signals": long_agreement},
+                metadata={
+                    "tp_ticks": self._tp_ticks(signal, EntryRegime.CONFIRMED_TAKER),
+                    "agreed_signals": long_agreement,
+                    "session_regime": context.session_regime.value,
+                    "extended_hours": context.extended_hours,
+                    "higher_tf_regime_score": signal.higher_tf_regime_score,
+                    "reservation_bias": signal.reservation_bias,
+                    "queue_state": context.queue_state.value,
+                    "execution_state": context.execution_state.value,
+                },
             )
         if (
-            signal.short_score >= self.config.strategy.confirmed_entry_threshold
-            and short_agreement >= self.config.strategy.confirmed_min_signal_agree
+            signal.short_score >= confirmed_entry_threshold
+            and short_agreement >= confirmed_min_signal_agree
             and signal.filters.overheat_short_ok
             and signal.filters.spread_ticks <= 2.0
             and context.short_inventory_ok
@@ -98,23 +190,39 @@ class DecisionEngine:
                 ts_event=signal.ts_event,
                 reason="confirmed_taker_short",
                 entry_regime=EntryRegime.CONFIRMED_TAKER,
+                execution_state=context.execution_state,
                 max_slippage_ticks=self.config.strategy.max_payup_ticks,
                 reduce_only=False,
                 purpose_detail="confirmed_taker_entry",
-                metadata={"tp_ticks": self._tp_ticks(signal), "agreed_signals": short_agreement},
+                metadata={
+                    "tp_ticks": self._tp_ticks(signal, EntryRegime.CONFIRMED_TAKER),
+                    "agreed_signals": short_agreement,
+                    "session_regime": context.session_regime.value,
+                    "extended_hours": context.extended_hours,
+                    "higher_tf_regime_score": signal.higher_tf_regime_score,
+                    "reservation_bias": signal.reservation_bias,
+                    "queue_state": context.queue_state.value,
+                    "execution_state": context.execution_state.value,
+                },
             )
 
-        if not self.config.strategy.passive_entry_enabled or not context.passive_retry_available:
+        if (
+            not self.config.strategy.passive_entry_enabled
+            or not session_config.allow_passive_entry
+            or not context.passive_retry_available
+            or context.execution_state != ExecutionState.NORMAL
+        ):
             return None
-        if signal.filters.spread_ticks != 2.0 or not signal.depth_available:
+        if not _tick_match(signal.filters.spread_ticks, 2.0) or not signal.depth_available:
             return None
 
         if (
-            signal.long_score >= self.config.strategy.passive_entry_threshold
-            and long_agreement >= self.config.strategy.confirmed_min_signal_agree
+            signal.long_score >= session_config.passive_entry_threshold
+            and long_agreement >= session_config.confirmed_min_signal_agree
             and signal.filters.overheat_long_ok
             and signal.weighted_imbalance > 0
             and signal.lob_ofi > 0
+            and signal.reservation_bias >= self.config.strategy.reservation_bias_threshold_ticks
         ):
             return TradeIntent(
                 action=IntentAction.OPEN_LONG,
@@ -125,19 +233,30 @@ class DecisionEngine:
                 ts_event=signal.ts_event,
                 reason="passive_improvement_long",
                 entry_regime=EntryRegime.PASSIVE_IMPROVEMENT,
+                execution_state=context.execution_state,
                 max_slippage_ticks=0.0,
                 reduce_only=False,
                 ttl_ms=self.config.strategy.entry_regime_defaults.passive_entry_ttl_ms,
                 purpose_detail="passive_improvement_entry",
-                metadata={"tp_ticks": self._tp_ticks(signal), "agreed_signals": long_agreement},
+                metadata={
+                    "tp_ticks": self._tp_ticks(signal, EntryRegime.PASSIVE_IMPROVEMENT),
+                    "agreed_signals": long_agreement,
+                    "session_regime": context.session_regime.value,
+                    "extended_hours": context.extended_hours,
+                    "higher_tf_regime_score": signal.higher_tf_regime_score,
+                    "reservation_bias": signal.reservation_bias,
+                    "queue_state": context.queue_state.value,
+                    "execution_state": context.execution_state.value,
+                },
             )
         if (
-            signal.short_score >= self.config.strategy.passive_entry_threshold
-            and short_agreement >= self.config.strategy.confirmed_min_signal_agree
+            signal.short_score >= session_config.passive_entry_threshold
+            and short_agreement >= session_config.confirmed_min_signal_agree
             and signal.filters.overheat_short_ok
             and context.short_inventory_ok
             and signal.weighted_imbalance < 0
             and signal.lob_ofi < 0
+            and signal.reservation_bias <= -self.config.strategy.reservation_bias_threshold_ticks
         ):
             return TradeIntent(
                 action=IntentAction.OPEN_SHORT,
@@ -148,11 +267,21 @@ class DecisionEngine:
                 ts_event=signal.ts_event,
                 reason="passive_improvement_short",
                 entry_regime=EntryRegime.PASSIVE_IMPROVEMENT,
+                execution_state=context.execution_state,
                 max_slippage_ticks=0.0,
                 reduce_only=False,
                 ttl_ms=self.config.strategy.entry_regime_defaults.passive_entry_ttl_ms,
                 purpose_detail="passive_improvement_entry",
-                metadata={"tp_ticks": self._tp_ticks(signal), "agreed_signals": short_agreement},
+                metadata={
+                    "tp_ticks": self._tp_ticks(signal, EntryRegime.PASSIVE_IMPROVEMENT),
+                    "agreed_signals": short_agreement,
+                    "session_regime": context.session_regime.value,
+                    "extended_hours": context.extended_hours,
+                    "higher_tf_regime_score": signal.higher_tf_regime_score,
+                    "reservation_bias": signal.reservation_bias,
+                    "queue_state": context.queue_state.value,
+                    "execution_state": context.execution_state.value,
+                },
             )
         return None
 
@@ -178,8 +307,13 @@ class DecisionEngine:
                 ts_event=context.signal.ts_event,
                 reason=reason,
                 entry_regime=context.position.entry_regime,
+                execution_state=context.execution_state,
                 reduce_only=True,
                 purpose_detail="protective_exit",
+                metadata={
+                    "session_regime": context.session_regime.value,
+                    "extended_hours": context.extended_hours,
+                },
             )
 
         if context.position.side == PositionSide.SHORT:
@@ -195,22 +329,37 @@ class DecisionEngine:
                 ts_event=context.signal.ts_event,
                 reason=reason,
                 entry_regime=context.position.entry_regime,
+                execution_state=context.execution_state,
                 reduce_only=True,
                 purpose_detail="protective_exit",
+                metadata={
+                    "session_regime": context.session_regime.value,
+                    "extended_hours": context.extended_hours,
+                },
             )
         return None
 
     def _exit_reason_long(self, context: DecisionContext, held_ms: float) -> str | None:
         signal = context.signal
         assert signal is not None
+        if context.session_regime == SessionRegime.OFF or not signal.session_trade_allowed:
+            return "session_end_exit"
         if signal.filters.quote_age_ms > self.config.risk.stale_quote_kill_ms:
             return "stale_quote_exit"
         if signal.filters.spread_ticks > self.config.risk.max_spread_kill_ticks:
             return "spread_blowout_exit"
+        if context.execution_state == ExecutionState.ABNORMAL or (not signal.market_ok and not signal.abnormal):
+            return "market_quality_degrade_exit"
         if signal.long_score <= self.config.strategy.score_collapse_threshold:
             return "score_collapse_exit"
         if signal.quote_ofi < 0 or signal.tape_ofi < 0:
             return "quote_tape_flip_exit"
+        if (
+            context.position is not None
+            and context.position.entry_regime == EntryRegime.AGGRESSIVE_TAKER
+            and held_ms >= self.config.strategy.aggressive_hold_ms
+        ):
+            return "aggressive_hold_exit"
         if held_ms >= self.config.strategy.hard_hold_ms:
             return "hard_hold_exit"
         if held_ms >= self.config.strategy.soft_hold_ms and signal.long_score <= self.config.strategy.soft_hold_score_threshold:
@@ -220,25 +369,37 @@ class DecisionEngine:
     def _exit_reason_short(self, context: DecisionContext, held_ms: float) -> str | None:
         signal = context.signal
         assert signal is not None
+        if context.session_regime == SessionRegime.OFF or not signal.session_trade_allowed:
+            return "session_end_exit"
         if signal.filters.quote_age_ms > self.config.risk.stale_quote_kill_ms:
             return "stale_quote_exit"
         if signal.filters.spread_ticks > self.config.risk.max_spread_kill_ticks:
             return "spread_blowout_exit"
+        if context.execution_state == ExecutionState.ABNORMAL or (not signal.market_ok and not signal.abnormal):
+            return "market_quality_degrade_exit"
         if signal.short_score <= self.config.strategy.score_collapse_threshold:
             return "score_collapse_exit"
         if signal.quote_ofi > 0 or signal.tape_ofi > 0:
             return "quote_tape_flip_exit"
+        if (
+            context.position is not None
+            and context.position.entry_regime == EntryRegime.AGGRESSIVE_TAKER
+            and held_ms >= self.config.strategy.aggressive_hold_ms
+        ):
+            return "aggressive_hold_exit"
         if held_ms >= self.config.strategy.hard_hold_ms:
             return "hard_hold_exit"
         if held_ms >= self.config.strategy.soft_hold_ms and signal.short_score <= self.config.strategy.soft_hold_score_threshold:
             return "soft_hold_exit"
         return None
 
-    def _tp_ticks(self, signal: object) -> float:
-        typed_signal = signal  # Helps keep callsites readable with dataclass-based inputs.
+    def _tp_ticks(self, signal: object, entry_regime: EntryRegime) -> float:
+        typed_signal = signal
         assert hasattr(typed_signal, "filters")
         assert hasattr(typed_signal, "trade_burst")
         assert hasattr(typed_signal, "microprice_tilt")
-        if typed_signal.filters.spread_ticks == 2.0 and abs(typed_signal.trade_burst) > 0 and abs(typed_signal.microprice_tilt) > 0:
+        if entry_regime == EntryRegime.AGGRESSIVE_TAKER:
+            return self.config.strategy.tp_ticks
+        if _tick_match(typed_signal.filters.spread_ticks, 2.0) and abs(typed_signal.trade_burst) > 0 and abs(typed_signal.microprice_tilt) > 0:
             return self.config.strategy.strong_tp_ticks
         return self.config.strategy.tp_ticks

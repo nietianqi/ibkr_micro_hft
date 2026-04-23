@@ -8,6 +8,7 @@ from .adapter.base import AbstractBrokerAdapter
 from .config import EngineConfig
 from .types import (
     EngineMode,
+    ExecutionState,
     EntryRegime,
     FillEvent,
     IntentAction,
@@ -78,6 +79,7 @@ class ExecutionManager:
             limit_price=intent.limit_price,
             purpose=intent.action.value,
             parent_local_order_id=intent.metadata.get("parent_local_order_id"),
+            outside_rth=bool(intent.metadata.get("extended_hours", False)),
         )
         order_state.broker_order_id = broker_order_id
         order_state.status = OrderStatus.SUBMITTED
@@ -241,6 +243,7 @@ class ExecutionManager:
             purpose=intent.action.value,
             purpose_detail=intent.purpose_detail,
             entry_regime=intent.entry_regime,
+            execution_state=intent.execution_state,
             ttl_ms=intent.ttl_ms,
             reduce_only=intent.reduce_only,
             reason=intent.reason,
@@ -266,6 +269,7 @@ class ExecutionManager:
             purpose=order.purpose,
             purpose_detail=order.purpose_detail,
             entry_regime=order.entry_regime,
+            execution_state=order.execution_state,
             ttl_ms=order.ttl_ms,
             cancel_reason=order.cancel_reason,
             reduce_only=order.reduce_only,
@@ -291,6 +295,7 @@ class ExecutionManager:
                 purpose=update.purpose,
                 purpose_detail=update.purpose_detail,
                 entry_regime=update.entry_regime,
+                execution_state=update.execution_state,
                 ttl_ms=update.ttl_ms,
                 cancel_reason=update.cancel_reason,
                 reduce_only=update.reduce_only,
@@ -306,6 +311,7 @@ class ExecutionManager:
         order.purpose = update.purpose or order.purpose
         order.purpose_detail = update.purpose_detail or order.purpose_detail
         order.entry_regime = update.entry_regime
+        order.execution_state = update.execution_state
         order.ttl_ms = update.ttl_ms
         order.cancel_reason = update.cancel_reason or order.cancel_reason
         order.reduce_only = update.reduce_only
@@ -390,6 +396,7 @@ class ExecutionManager:
                         limit_price=None,
                         ts_event=ts_event,
                         reason="reprice_take_profit",
+                        execution_state=existing_tp.execution_state,
                         reduce_only=True,
                         purpose_detail="cancel_take_profit",
                         metadata={"target_local_order_id": existing_tp.local_order_id},
@@ -401,6 +408,13 @@ class ExecutionManager:
     def _make_take_profit_intent(self, position: PositionState, order: OrderState | None, ts_event: datetime) -> TradeIntent:
         tick_size = self.config.symbol_config(position.symbol).tick_size
         tp_ticks = float(order.metadata.get("tp_ticks", self.config.strategy.tp_ticks)) if order is not None else self.config.strategy.tp_ticks
+        tp_metadata = {"parent_local_order_id": position.entry_order_id}
+        if order is not None:
+            if "extended_hours" in order.metadata:
+                tp_metadata["extended_hours"] = order.metadata["extended_hours"]
+            if "session_regime" in order.metadata:
+                tp_metadata["session_regime"] = order.metadata["session_regime"]
+            tp_metadata["execution_state"] = order.execution_state.value
         if position.side == PositionSide.LONG:
             return TradeIntent(
                 action=IntentAction.PLACE_TAKE_PROFIT,
@@ -411,9 +425,10 @@ class ExecutionManager:
                 ts_event=ts_event,
                 reason="entry_filled_take_profit",
                 entry_regime=position.entry_regime,
+                execution_state=order.execution_state if order is not None else ExecutionState.NORMAL,
                 reduce_only=True,
                 purpose_detail="take_profit",
-                metadata={"parent_local_order_id": position.entry_order_id},
+                metadata=tp_metadata,
             )
         return TradeIntent(
             action=IntentAction.PLACE_TAKE_PROFIT,
@@ -424,9 +439,10 @@ class ExecutionManager:
             ts_event=ts_event,
             reason="entry_filled_take_profit",
             entry_regime=position.entry_regime,
+            execution_state=order.execution_state if order is not None else ExecutionState.NORMAL,
             reduce_only=True,
             purpose_detail="take_profit",
-            metadata={"parent_local_order_id": position.entry_order_id},
+            metadata=tp_metadata,
         )
 
     def update_unrealized(self, quote: QuoteUpdate) -> None:

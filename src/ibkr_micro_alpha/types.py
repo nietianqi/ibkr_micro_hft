@@ -57,6 +57,33 @@ class EntryRegime(str, Enum):
     NONE = "none"
     CONFIRMED_TAKER = "confirmed_taker"
     PASSIVE_IMPROVEMENT = "passive_improvement"
+    AGGRESSIVE_TAKER = "aggressive_taker"
+
+
+class SessionRegime(str, Enum):
+    OFF = "off"
+    PRE = "pre"
+    OPEN = "open"
+    CORE = "core"
+    CLOSE = "close"
+    POST = "post"
+
+
+class SymbolTier(str, Enum):
+    TIER_A = "tier_a"
+    TIER_B = "tier_b"
+    WATCHLIST = "watchlist"
+
+
+class QueueState(str, Enum):
+    NORMAL = "normal"
+    THIN = "thin"
+
+
+class ExecutionState(str, Enum):
+    NORMAL = "normal"
+    QUEUE = "queue"
+    ABNORMAL = "abnormal"
 
 
 @dataclass(slots=True)
@@ -158,6 +185,7 @@ class OrderUpdate:
     purpose: str = ""
     purpose_detail: str = ""
     entry_regime: EntryRegime = EntryRegime.NONE
+    execution_state: ExecutionState = ExecutionState.NORMAL
     ttl_ms: int | None = None
     cancel_reason: str = ""
     reduce_only: bool = False
@@ -202,8 +230,10 @@ class SignalFilterState:
     spread_ticks: float
     depth_available: bool
     short_inventory_ok: bool
+    queue_state: QueueState = QueueState.NORMAL
     abnormal: bool = False
     reasons: tuple[str, ...] = ()
+    session_reasons: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -225,6 +255,17 @@ class SignalSnapshot:
     long_score: float
     short_score: float
     depth_available: bool
+    agreement_count_long: int = 0
+    agreement_count_short: int = 0
+    linkage_score: float = 0.0
+    reservation_bias: float = 0.0
+    market_ok: bool = False
+    abnormal: bool = False
+    queue_state: QueueState = QueueState.NORMAL
+    execution_state: ExecutionState = ExecutionState.NORMAL
+    session_regime: SessionRegime = SessionRegime.OFF
+    higher_tf_regime_score: float = 0.0
+    session_trade_allowed: bool = False
     shortable_tier: float | None = None
     shortable_shares: int | None = None
     entry_regime_candidate: EntryRegime = EntryRegime.NONE
@@ -249,6 +290,7 @@ class OrderState:
     purpose: str = ""
     purpose_detail: str = ""
     entry_regime: EntryRegime = EntryRegime.NONE
+    execution_state: ExecutionState = ExecutionState.NORMAL
     ttl_ms: int | None = None
     cancel_reason: str = ""
     reduce_only: bool = False
@@ -296,6 +338,10 @@ class DecisionContext:
     position: PositionState | None
     session_health: SessionHealth
     pending_orders: int
+    session_regime: SessionRegime = SessionRegime.OFF
+    extended_hours: bool = False
+    queue_state: QueueState = QueueState.NORMAL
+    execution_state: ExecutionState = ExecutionState.NORMAL
     depth_available: bool = False
     short_inventory_ok: bool = True
     shortable_tier: float | None = None
@@ -315,6 +361,7 @@ class TradeIntent:
     reason: str
     take_profit_price: float | None = None
     entry_regime: EntryRegime = EntryRegime.NONE
+    execution_state: ExecutionState = ExecutionState.NORMAL
     max_slippage_ticks: float = 0.0
     reduce_only: bool = False
     ttl_ms: int | None = None

@@ -29,6 +29,8 @@ class SymbolMarketState:
     quote_ofi_window: deque[tuple[datetime, float]] = field(default_factory=deque)
     depth_ofi_window: deque[tuple[datetime, float]] = field(default_factory=deque)
     microprice_window: deque[tuple[datetime, float]] = field(default_factory=deque)
+    quote_history: deque[tuple[datetime, float, float, float]] = field(default_factory=deque)
+    trade_rate_history: deque[tuple[datetime, float]] = field(default_factory=deque)
     metric_history: dict[str, deque[float]] = field(default_factory=lambda: defaultdict(deque))
     shortable_tier: float | None = None
     shortable_shares: int | None = None
@@ -116,6 +118,21 @@ class SymbolMarketState:
     def push_microprice(self, ts_event: datetime, value: float, window_ms: int) -> None:
         self.microprice_window.append((ts_event, value))
         _prune_time_window(self.microprice_window, ts_event - timedelta(milliseconds=window_ms))
+
+    def push_quote_snapshot(
+        self,
+        ts_event: datetime,
+        mid_price: float,
+        spread_ticks: float,
+        top_depth: float,
+        window_ms: int,
+    ) -> None:
+        self.quote_history.append((ts_event, mid_price, spread_ticks, top_depth))
+        _prune_time_window(self.quote_history, ts_event - timedelta(milliseconds=window_ms))
+
+    def push_trade_rate(self, ts_event: datetime, trade_rate: float, window_ms: int) -> None:
+        self.trade_rate_history.append((ts_event, trade_rate))
+        _prune_time_window(self.trade_rate_history, ts_event - timedelta(milliseconds=window_ms))
 
     def capabilities(self) -> MarketDataCapabilities:
         return MarketDataCapabilities(

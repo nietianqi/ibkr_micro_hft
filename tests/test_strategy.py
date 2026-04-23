@@ -10,10 +10,13 @@ from ibkr_micro_alpha.types import (
     DecisionContext,
     EngineMode,
     EntryRegime,
+    ExecutionState,
     MarketDataCapabilities,
     PositionState,
     PositionSide,
     QuoteUpdate,
+    QueueState,
+    SessionRegime,
     SessionHealth,
     SignalFilterState,
     SignalSnapshot,
@@ -29,6 +32,9 @@ def _signal_snapshot(
     depth_available: bool,
     weighted_imbalance: float = 0.4,
     lob_ofi: float = 3.0,
+    reservation_bias: float = 0.5,
+    execution_state: ExecutionState = ExecutionState.NORMAL,
+    queue_state: QueueState = QueueState.NORMAL,
 ) -> SignalSnapshot:
     return SignalSnapshot(
         symbol="AAPL",
@@ -63,12 +69,25 @@ def _signal_snapshot(
             spread_ticks=spread_ticks,
             depth_available=depth_available,
             short_inventory_ok=True,
+            queue_state=queue_state,
             abnormal=False,
             reasons=(),
+            session_reasons=(),
         ),
         long_score=long_score,
         short_score=short_score,
         depth_available=depth_available,
+        agreement_count_long=6,
+        agreement_count_short=0,
+        linkage_score=0.0,
+        reservation_bias=reservation_bias,
+        market_ok=True,
+        abnormal=False,
+        queue_state=queue_state,
+        execution_state=execution_state,
+        session_regime=SessionRegime.CORE,
+        higher_tf_regime_score=0.4,
+        session_trade_allowed=True,
         shortable_tier=3.0,
         shortable_shares=1000,
         entry_regime_candidate=EntryRegime.NONE,
@@ -85,6 +104,10 @@ def _context(signal: SignalSnapshot, quote: QuoteUpdate) -> DecisionContext:
         position=None,
         session_health=SessionHealth(True, False, signal.ts_event, 0, False, 0, EngineMode.SHADOW),
         pending_orders=0,
+        session_regime=signal.session_regime,
+        extended_hours=False,
+        queue_state=signal.queue_state,
+        execution_state=signal.execution_state,
         depth_available=signal.depth_available,
         short_inventory_ok=True,
         shortable_tier=signal.shortable_tier,
@@ -129,6 +152,42 @@ def test_decision_engine_uses_passive_improvement_when_depth_bonus_is_available(
     assert intent.ttl_ms == config.strategy.entry_regime_defaults.passive_entry_ttl_ms
 
 
+def test_decision_engine_uses_aggressive_taker_for_high_conviction_burst() -> None:
+    config = EngineConfig(mode=EngineMode.SHADOW)
+    decision_engine = DecisionEngine(config)
+    ts = datetime.now(UTC).replace(tzinfo=None)
+    signal = _signal_snapshot(ts, long_score=3.6, short_score=-3.6, spread_ticks=1.0, depth_available=False)
+    signal.zscores["trade_burst"] = 1.5
+    quote = QuoteUpdate("AAPL", ts, ts, 100.00, 200.0, 100.01, 100.0)
+
+    intent = decision_engine.decide(_context(signal, quote))
+
+    assert intent is not None
+    assert intent.entry_regime == EntryRegime.AGGRESSIVE_TAKER
+    assert intent.reason == "aggressive_taker_long"
+
+
+def test_decision_engine_blocks_passive_improvement_in_queue_state() -> None:
+    config = EngineConfig(mode=EngineMode.SHADOW)
+    decision_engine = DecisionEngine(config)
+    ts = datetime.now(UTC).replace(tzinfo=None)
+    signal = _signal_snapshot(
+        ts,
+        long_score=2.7,
+        short_score=-2.7,
+        spread_ticks=2.0,
+        depth_available=True,
+        execution_state=ExecutionState.QUEUE,
+        queue_state=QueueState.THIN,
+    )
+    quote = QuoteUpdate("AAPL", ts, ts, 100.00, 200.0, 100.02, 100.0)
+
+    intent = decision_engine.decide(_context(signal, quote))
+
+    assert intent is not None
+    assert intent.entry_regime == EntryRegime.CONFIRMED_TAKER
+
+
 def test_decision_engine_triggers_protective_exit_for_open_position() -> None:
     config = EngineConfig(mode=EngineMode.SHADOW)
     decision_engine = DecisionEngine(config)
@@ -154,3 +213,18 @@ def test_decision_engine_triggers_protective_exit_for_open_position() -> None:
     assert intent is not None
     assert intent.action.value == "exit"
     assert intent.reduce_only is True
+
+
+def test_decision_engine_blocks_entry_when_session_trade_is_disallowed() -> None:
+    config = EngineConfig(mode=EngineMode.SHADOW)
+    decision_engine = DecisionEngine(config)
+    ts = datetime.now(UTC).replace(tzinfo=None)
+    signal = _signal_snapshot(ts, long_score=3.0, short_score=-3.0, spread_ticks=1.0, depth_available=False)
+    signal.session_trade_allowed = False
+    signal.filters.market_ok = False
+    signal.filters.session_reasons = ("session_entry_disabled",)
+    quote = QuoteUpdate("AAPL", ts, ts, 100.00, 200.0, 100.01, 100.0)
+
+    intent = decision_engine.decide(_context(signal, quote))
+
+    assert intent is None

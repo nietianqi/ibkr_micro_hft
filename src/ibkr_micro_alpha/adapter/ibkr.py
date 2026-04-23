@@ -379,6 +379,7 @@ class IBKRAdapter(AbstractBrokerAdapter):
         limit_price: float | None,
         purpose: str,
         parent_local_order_id: str | None = None,
+        outside_rth: bool = False,
     ) -> int:
         if self._app is None or self._next_order_id is None:
             raise RuntimeError("adapter not connected")
@@ -392,6 +393,7 @@ class IBKRAdapter(AbstractBrokerAdapter):
         order.orderType = "LMT"
         order.lmtPrice = limit_price or 0.0
         order.tif = "DAY"
+        order.outsideRth = outside_rth
         order.orderRef = purpose
         if parent_local_order_id:
             parent_lookup = next(

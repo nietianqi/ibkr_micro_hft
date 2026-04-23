@@ -4,3 +4,4 @@ __pycache__/
 runtime/
 .coverage
 htmlcov/
+.idea/
